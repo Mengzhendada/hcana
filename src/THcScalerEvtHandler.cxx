@@ -50,6 +50,7 @@ To enable debugging you may try this in the setup script
 #include "TNamed.h"
 #include "TMath.h"
 #include "TString.h"
+#include "TROOT.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -59,6 +60,7 @@ To enable debugging you may try this in the setup script
 #include <iterator>
 #include "THaVarList.h"
 #include "VarDef.h"
+#include "Helper.h"
 
 using namespace std;
 using namespace Decoder;
@@ -73,7 +75,9 @@ static const UInt_t MAXCHAN   = 32;
 static const UInt_t defaultDT = 4;
 
 THcScalerEvtHandler::THcScalerEvtHandler(const char *name, const char* description)
-  : THaEvtTypeHandler(name,description), evcount(0), evcountR(0.0), ifound(0), fNormIdx(-1),
+  : THaEvtTypeHandler(name,description),
+    fBCM_Gain(0), fBCM_Offset(0), fBCM_SatOffset(0), fBCM_SatQuadratic(0), fBCM_delta_charge(0),
+    evcount(0), evcountR(0.0), ifound(0), fNormIdx(-1),
     fNormSlot(-1),
     dvars(0),dvars_prev_read(0), dvarsFirst(0), fScalerTree(0), fUseFirstEvent(kTRUE),
     fOnlySyncEvents(kFALSE), fOnlyBanks(kFALSE), fDelayedType(-1),
@@ -88,9 +92,26 @@ THcScalerEvtHandler::THcScalerEvtHandler(const char *name, const char* descripti
 
 THcScalerEvtHandler::~THcScalerEvtHandler()
 {
-  if (fScalerTree) {
+  // The tree object is owned by ROOT since it gets associated wth the output
+  // file, so DO NOT delete it here. 
+  if (!TROOT::Initialized()) {
     delete fScalerTree;
   }
+  Podd::DeleteContainer(scalers);
+  Podd::DeleteContainer(scalerloc);
+  delete [] dvars_prev_read;
+  delete [] dvars;
+  delete [] dvarsFirst;
+  delete [] fBCM_Gain;
+  delete [] fBCM_Offset;
+  delete [] fBCM_SatOffset;
+  delete [] fBCM_SatQuadratic;
+  delete [] fBCM_delta_charge;
+
+  for( vector<UInt_t*>::iterator it = fDelayedEvents.begin();
+       it != fDelayedEvents.end(); ++it )
+    delete [] *it;
+  fDelayedEvents.clear();
 }
 
 Int_t THcScalerEvtHandler::End( THaRunBase* )
@@ -104,10 +125,14 @@ Int_t THcScalerEvtHandler::End( THaRunBase* )
     AnalyzeBuffer(rdata,kFALSE);
   }
   if (fDebugFile) *fDebugFile << "scaler tree ptr  "<<fScalerTree<<endl;
-    evNumberR = -1;
+  evNumber += 1;
+  evNumberR = evNumber;
   if (fScalerTree) fScalerTree->Fill();
 
-  fDelayedEvents.clear();	// Does this free the arrays?
+  for( vector<UInt_t*>::iterator it = fDelayedEvents.begin();
+       it != fDelayedEvents.end(); ++it )
+    delete [] *it;
+  fDelayedEvents.clear();
 
   if (fScalerTree) fScalerTree->Write();
   return 0;
@@ -130,11 +155,15 @@ Int_t THcScalerEvtHandler::ReadDatabase(const TDatime& date )
   if(fNumBCMs > 0) {
     fBCM_Gain = new Double_t[fNumBCMs];
     fBCM_Offset = new Double_t[fNumBCMs];
+    fBCM_SatOffset = new Double_t[fNumBCMs];
+    fBCM_SatQuadratic = new Double_t[fNumBCMs];
     fBCM_delta_charge= new Double_t[fNumBCMs];
     string bcm_namelist;
     DBRequest list2[]={
       {"BCM_Gain",      fBCM_Gain,         kDouble, (UInt_t) fNumBCMs},
       {"BCM_Offset",     fBCM_Offset,       kDouble,(UInt_t) fNumBCMs},
+      {"BCM_SatQuadratic",     fBCM_SatQuadratic,       kDouble,(UInt_t) fNumBCMs,1},
+      {"BCM_SatOffset",     fBCM_SatOffset,       kDouble,(UInt_t) fNumBCMs,1},
       {"BCM_Names",     &bcm_namelist,       kString},
       {"BCM_Current_threshold",     &fbcm_Current_Threshold,       kDouble,0, 1},
       {"BCM_Current_threshold_index",     &fbcm_Current_Threshold_Index,       kInt,0,1},
@@ -142,6 +171,10 @@ Int_t THcScalerEvtHandler::ReadDatabase(const TDatime& date )
     };
     fbcm_Current_Threshold = 0.0;
     fbcm_Current_Threshold_Index = 0;
+    for(Int_t i=0;i<fNumBCMs;i++) {
+      fBCM_SatOffset[i]=0.;
+      fBCM_SatQuadratic[i]=0.;
+    }
     gHcParms->LoadParmValues((DBRequest*)&list2, prefix);
     vector<string> bcm_names = vsplit(bcm_namelist);
     for(Int_t i=0;i<fNumBCMs;i++) {
@@ -172,6 +205,10 @@ Int_t THcScalerEvtHandler::Analyze(THaEvData *evdata)
 {
   Int_t lfirst=1;
 
+  if(evdata->GetEvNum() > 0) {
+    evNumber=evdata->GetEvNum();
+    evNumberR = evNumber;
+  }
   if ( !IsMyEvent(evdata->GetEvType()) ) return -1;
 
   if (fDebugFile) {
@@ -222,14 +259,10 @@ Int_t THcScalerEvtHandler::Analyze(THaEvData *evdata)
     
     UInt_t *datacopy = new UInt_t[evlen];
     fDelayedEvents.push_back(datacopy);
-    for(Int_t i=0;i<evlen;i++) {
-      datacopy[i] = rdata[i];
-    }
+    memcpy(datacopy,rdata,evlen*sizeof(UInt_t));
     return 1;
   } else { 			// A normal event
     if (fDebugFile) *fDebugFile<<"\n\nTHcScalerEvtHandler :: Debugging event type "<<dec<<evdata->GetEvType()<< " event num = " << evdata->GetEvNum() << endl<<endl;
-    evNumber=evdata->GetEvNum();
-    evNumberR = evNumber;
     Int_t ret;
     if((ret=AnalyzeBuffer(rdata,fOnlySyncEvents))) {
       if (fDebugFile) *fDebugFile << "scaler tree ptr  "<<fScalerTree<<endl;
@@ -392,12 +425,18 @@ Int_t THcScalerEvtHandler::AnalyzeBuffer(UInt_t* rdata, Bool_t onlysync)
 	      }
 	    if (scalerloc[ivar]->ikind == ICURRENT) {
               dvars[ivar]=0.;
-		if (bcm_ind != -1) dvars[ivar]=((scalers[idx]->GetData(ichan))/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+	      if (bcm_ind != -1) {
+                 dvars[ivar]=((scalers[idx]->GetData(ichan))/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		 dvars[ivar]=dvars[ivar]+fBCM_SatQuadratic[bcm_ind]*TMath::Power(TMath::Max(dvars[ivar]-fBCM_SatOffset[bcm_ind],0.0),2.0);
+
+	      }
          	if (bcm_ind == fbcm_Current_Threshold_Index) scal_current= dvars[ivar];
 	    }
 	    if (scalerloc[ivar]->ikind == ICHARGE) {
 	      if (bcm_ind != -1) {
-		fBCM_delta_charge[bcm_ind]=fDeltaTime*((scalers[idx]->GetData(ichan))/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		Double_t cur_temp=((scalers[idx]->GetData(ichan))/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		cur_temp=cur_temp+fBCM_SatQuadratic[bcm_ind]*TMath::Power(TMath::Max(cur_temp-fBCM_SatOffset[bcm_ind],0.0),2.0);
+		fBCM_delta_charge[bcm_ind]=fDeltaTime*cur_temp;
 		dvars[ivar]+=fBCM_delta_charge[bcm_ind];
 	      }
 	    }
@@ -432,12 +471,17 @@ Int_t THcScalerEvtHandler::AnalyzeBuffer(UInt_t* rdata, Bool_t onlysync)
 		}
 	    if (scalerloc[ivar]->ikind == ICURRENT) {
 	        dvarsFirst[ivar]=0.0;
-                if (bcm_ind != -1) dvarsFirst[ivar]=((scalers[idx]->GetData(ichan))/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+                if (bcm_ind != -1) {
+                 dvarsFirst[ivar]=((scalers[idx]->GetData(ichan))/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		 dvarsFirst[ivar]=dvarsFirst[ivar]+fBCM_SatQuadratic[bcm_ind]*TMath::Power(TMath::Max(dvars[ivar]-fBCM_SatOffset[bcm_ind],0.0),2.);
+		}
          	if (bcm_ind == fbcm_Current_Threshold_Index) scal_current= dvarsFirst[ivar];
 	    }
 	    if (scalerloc[ivar]->ikind == ICHARGE) {
 	      if (bcm_ind != -1) {
-		fBCM_delta_charge[bcm_ind]=fDeltaTime*((scalers[idx]->GetData(ichan))/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		Double_t cur_temp=((scalers[idx]->GetData(ichan))/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		cur_temp=cur_temp+fBCM_SatQuadratic[bcm_ind]*TMath::Power(TMath::Max(cur_temp-fBCM_SatOffset[bcm_ind],0.0),2.);
+		fBCM_delta_charge[bcm_ind]=fDeltaTime*cur_temp;
                dvarsFirst[ivar]+=fBCM_delta_charge[bcm_ind];
 	      }
 	    }
@@ -499,7 +543,12 @@ Int_t THcScalerEvtHandler::AnalyzeBuffer(UInt_t* rdata, Bool_t onlysync)
 		  diff = scaldata - scal_prev_read[nscal-1];
 		}
 		dvars[ivar]=0.;
- 		if (fDeltaTime>0) dvars[ivar]=(diff/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+ 		if (fDeltaTime>0) {
+		Double_t cur_temp=(diff/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		cur_temp=cur_temp+fBCM_SatQuadratic[bcm_ind]*TMath::Power(TMath::Max(cur_temp-fBCM_SatOffset[bcm_ind],0.0),2.);
+		  
+		dvars[ivar]=cur_temp;
+		}
 	      }
 	      if (bcm_ind == fbcm_Current_Threshold_Index) scal_current= dvars[ivar];
 	    }
@@ -513,7 +562,11 @@ Int_t THcScalerEvtHandler::AnalyzeBuffer(UInt_t* rdata, Bool_t onlysync)
 		  diff = scaldata - scal_prev_read[nscal-1];
 		}
 		fBCM_delta_charge[bcm_ind]=0;
-		if (fDeltaTime>0)  fBCM_delta_charge[bcm_ind]=fDeltaTime*(diff/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		if (fDeltaTime>0)  {
+		  Double_t cur_temp=(diff/fDeltaTime-fBCM_Offset[bcm_ind])/fBCM_Gain[bcm_ind];
+		  cur_temp=cur_temp+fBCM_SatQuadratic[bcm_ind]*TMath::Power(TMath::Max(cur_temp-fBCM_SatOffset[bcm_ind],0.0),2.);
+		fBCM_delta_charge[bcm_ind]=fDeltaTime*cur_temp;
+		}
                  dvars[ivar]+=fBCM_delta_charge[bcm_ind];
 	      }
 	    }
@@ -535,7 +588,7 @@ Int_t THcScalerEvtHandler::AnalyzeBuffer(UInt_t* rdata, Bool_t onlysync)
       UInt_t scaldata = scalers[idx]->GetData(ichan);
       if ( scal_current > fbcm_Current_Threshold) {
 	UInt_t diff;
-	if(scaldata < scal_prev_read[nscal-1]) {
+	if(scaldata < dvars_prev_read[ivar]) {
 	  diff = (kMaxUInt-(dvars_prev_read[ivar] - 1)) + scaldata;
 	} else {
 	  diff = scaldata - dvars_prev_read[ivar];
@@ -586,6 +639,9 @@ THaAnalysisObject::EStatus THcScalerEvtHandler::Init(const TDatime& date)
   fStatus = kOK;
   fNormIdx = -1;
 
+  for( vector<UInt_t*>::iterator it = fDelayedEvents.begin();
+       it != fDelayedEvents.end(); ++it )
+    delete [] *it;
   fDelayedEvents.clear();
 
   cout << "Howdy !  We are initializing THcScalerEvtHandler !!   name =   "
@@ -632,7 +688,7 @@ THaAnalysisObject::EStatus THcScalerEvtHandler::Init(const TDatime& date)
 	UInt_t islot = atoi(dbline[1].c_str());
 	UInt_t ichan = atoi(dbline[2].c_str());
 	UInt_t ikind = atoi(dbline[3].c_str());
-	if (fDebugFile)
+       	if (fDebugFile)
 	  *fDebugFile << "add var "<<dbline[1]<<"   desc = "<<sdesc<<"    islot= "<<islot<<"  "<<ichan<<"  "<<ikind<<endl;
 	TString tsname(dbline[4].c_str());
 	TString tsdesc(sdesc.c_str());

@@ -43,16 +43,20 @@ public:
 
   virtual Int_t      Decode( const THaEvData& );
   virtual EStatus    Init( const TDatime& run_time );
+  virtual void       Clear( Option_t* opt="" );
 
   virtual Int_t      CoarseProcess( TClonesArray& tracks );
   virtual Int_t      FineProcess( TClonesArray& tracks );
   virtual Int_t      End(THaRunBase* run=0);
 
+  Double_t DetermineTimePeak(Int_t FillFlag);
   void EstimateFocalPlaneTime(void);
   void OriginalTrackEffTest(void);
   void TrackEffTest(void);
+  void CalcCluster(void);
   virtual Int_t      ApplyCorrections( void );
   Double_t GetStartTime() const { return fStartTime; }
+  Double_t GetOffsetTime() const { return fOffsetTime; }
   Bool_t IsStartTimeGood() const {return fGoodStartTime;};
   Int_t GetNfptimes() const {return fNfptimes;};
   Int_t GetScinIndex(Int_t nPlane, Int_t nPaddle);
@@ -147,17 +151,26 @@ protected:
 
   TH1F *hTime;
   // Calibration
-
+  Double_t fRatio_xpfp_to_xfp;
+  Double_t trackeff_scint_ydiff_max ;
+  Double_t trackeff_scint_xdiff_max ;
   // Per-event data
   Bool_t fSHMS;
   Bool_t fGoodStartTime;
   Double_t fStartTime;
+  Double_t fADCStartTime;
+  Double_t fOffsetTime;
   Double_t fFPTimeAll;
   Int_t fNfptimes;
   Bool_t* fPresentP;
-  Double_t fTimeHist_Peak;
-  Double_t fTimeHist_Sigma;
-  Double_t fTimeHist_Hits;
+  Double_t fTimeHist_StartTime_NumPeaks;
+  Double_t fTimeHist_StartTime_Peak;
+  Double_t fTimeHist_StartTime_Sigma;
+  Double_t fTimeHist_StartTime_Hits;
+  Double_t fTimeHist_FpTime_NumPeaks;
+  Double_t fTimeHist_FpTime_Peak;
+  Double_t fTimeHist_FpTime_Sigma;
+  Double_t fTimeHist_FpTime_Hits;
 
   Double_t     fBeta;
 
@@ -167,7 +180,7 @@ protected:
 
   // Potential Hall C parameters.  Mostly here for demonstration
   Int_t fNPlanes;		// Number of planes
-  UInt_t fMaxScinPerPlane,fMaxHodoScin; // max number of scin/plane; product of the first two
+  UInt_t fMaxScinPerPlane,fMaxHodoScin,fTotHodScin; // max number of scin/plane; product of the first two
   Double_t fStartTimeCenter, fStartTimeSlop, fScinTdcToTime;
   Double_t fTofTolerance;
   Int_t fCosmicFlag; //
@@ -176,6 +189,7 @@ protected:
   Double_t fScinTdcMin, fScinTdcMax; // min and max TDC values
   char** fPlaneNames;
   UInt_t* fNPaddle;		// Number of paddles per plane
+  Int_t fTrackBetaIncludeSinglePmtHits;
 
   Double_t *fHodoNegAdcTimeWindowMin;    
   Double_t *fHodoNegAdcTimeWindowMax;
@@ -227,6 +241,7 @@ protected:
 
   Int_t        fCheckEvent;
   Int_t        fEventType;
+  Int_t        fEventNum;
 
   Int_t        fGoodTrack;
   Double_t     fScin2XZpos;
@@ -340,9 +355,8 @@ protected:
     Int_t hitNumInPlane;
     THcHodoHit *hit;
     TOFPInfo () : onTrack(kFALSE), keep_pos(kFALSE), keep_neg(kFALSE),
-      time_pos(-99.0), time_neg(-99.0),
-
-scin_pos_time(0.0), scin_neg_time(0.0) {}
+		  time_pos(-99.0), time_neg(-99.0), scin_pos_time(0.0),
+		  scin_neg_time(0.0) {}
   };
   std::vector<TOFPInfo> fTOFPInfo;
 
@@ -371,6 +385,10 @@ scin_pos_time(0.0), scin_neg_time(0.0) {}
   std::vector<Int_t > fNClust;		                // # scins clusters for the plane
   std::vector<std::vector<Int_t> > fClustSize;		                // # scin cluster size
   std::vector<std::vector<Double_t> > fClustPos;		                // # scin cluster position
+  std::vector<Int_t > fNCluster;		                // # scins clusters for the plane
+  std::vector<std::vector<Int_t> > fClusterSize;		                // # scin cluster size
+  std::vector<std::vector<Double_t> > fClusterXPos;		                // # scin cluster position
+  std::vector<std::vector<Double_t> > fClusterYPos;		                // # scin cluster position
   std::vector<Int_t > fThreeScin;	                // # scins three clusters for the plane
   std::vector<Int_t > fGoodScinHitsX;                   // # hits in fid x range
   // Could combine the above into a structure
@@ -380,11 +398,12 @@ scin_pos_time(0.0), scin_neg_time(0.0) {}
     Bool_t goodScinTime;
     Bool_t goodTdcNeg;
     Bool_t goodTdcPos;
+    GoodFlags() : onTrack(false), goodScinTime(false),
+		  goodTdcNeg(false), goodTdcPos(false) {}
   };
   std::vector<std::vector<std::vector<GoodFlags> > > fGoodFlags;
   //
 
-  void           ClearEvent();
   void           DeleteArrays();
   virtual Int_t  ReadDatabase( const TDatime& date );
   virtual Int_t  DefineVariables( EMode mode = kDefine );

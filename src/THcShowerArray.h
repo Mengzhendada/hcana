@@ -111,6 +111,7 @@ protected:
   vector<Double_t>      fGoodAdcPulseIntRaw;      // [fNelem] Good Raw ADC pulse Integrals of blocks
   
   vector<Double_t>      fGoodAdcPed;             // [fNelem] Event by event (FADC) good pulse pedestals
+  vector<Double_t>      fGoodAdcMult;             
   vector<Double_t>      fGoodAdcPulseInt;       // [fNelem] good pedestal subtracted pulse integrals
   vector<Double_t>      fGoodAdcPulseAmp;
   vector<Double_t>      fGoodAdcPulseTime;
@@ -147,6 +148,7 @@ protected:
   static const Int_t kADCSampIntDynPed=3;
   Double_t *fAdcTimeWindowMin ;
   Double_t *fAdcTimeWindowMax ;
+  Int_t *fPedDefault ;
   Double_t fAdcThreshold ;
   Double_t fAdcTdcOffset;
 

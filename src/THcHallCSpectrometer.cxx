@@ -137,6 +137,11 @@ Int_t THcHallCSpectrometer::DefineVariables( EMode mode )
   fIsSetup = ( mode == kDefine );
   RVarDef vars[] = {
     { "tr.betachisq", "Chi2 of beta", "fTracks.THaTrack.GetBetaChi2()"},
+    { "tr.GoodPlane4", "Flag for track hitting hodo plane 4", "fTracks.THaTrack.GetGoodPlane4()"},
+    { "tr.GoodPlane3", "Flag for track hitting hodo plane 3", "fTracks.THaTrack.GetGoodPlane3()"},
+    { "tr.fptime", "Track hodo focal plane time", "fTracks.THaTrack.GetFPTime()"},
+    { "tr.npmt", "Track number of hodo PMTs hit", "fTracks.THaTrack.GetNPMT()"},
+    { "tr.PruneSelect", "Prune Select ID", "fPruneSelect"},
     { "present", "Trigger Type includes this spectrometer", "fPresent"},
     { 0 }
   };
@@ -274,17 +279,32 @@ Int_t THcHallCSpectrometer::ReadDatabase( const TDatime& date )
     {"prune_chibeta",         &fPruneChiBeta,          kDouble,         0,  1},
     {"prune_npmt",            &fPruneNPMT,           kDouble,         0,  1},
     {"prune_fptime",          &fPruneFpTime,             kDouble,         0,  1},
+    {"prune_DipoleExit",          &fPruneDipoleExit,             kDouble,         0,  1},
     {0}
   };
 
   // Default values
+  fPruneDipoleExit=0;
   fSelUsingScin = 0;
   fSelUsingPrune = 0;
+  fPruneXp = .2;
+  fPruneYp = .2;
+  fPruneYtar = 20.;
+  fPruneDelta = 30.;
+  fPruneBeta = 30.;
+  fPruneDf= 1;
+  fPruneChiBeta= 100.;
+  fPruneNPMT= 6;
+  fPruneFpTime= 1000.;
   fPhi_lab = 0.;
   fSatCorr=0.;
   fMispointing_x=999.;
   fMispointing_y=999.;
   gHcParms->LoadParmValues((DBRequest*)&list,prefix);
+  fUseHMSDipoleExitWindow=kFALSE;
+  fUseSHMSDipoleExitWindow=kFALSE;
+  if (prefix[0]=='h') fUseHMSDipoleExitWindow=kTRUE;
+  if (prefix[0]=='p') fUseSHMSDipoleExitWindow=kTRUE;
  
   //  mispointing in transport system y is horizontal and +x is vertical down
   if (fMispointing_y == 999.) {
@@ -341,7 +361,7 @@ Int_t THcHallCSpectrometer::ReadDatabase( const TDatime& date )
   //
   
   
-  EnforcePruneLimits();
+  //EnforcePruneLimits();
 
 #ifdef WITH_DEBUG
   cout <<  "\n\n\nhodo planes = " <<  fNPlanes << endl;
@@ -480,7 +500,7 @@ Int_t THcHallCSpectrometer::FindVertices( TClonesArray& tracks )
     TransportToLab(track->GetP(),track->GetTTheta(),track->GetTPhi(),pvect_temp);
     track->SetPvect(pvect_temp);
   }
-
+  fPruneSelect=-1.;
   if (fHodo==0 || (( fSelUsingScin == 0 ) && ( fSelUsingPrune == 0 )) ) {
     BestTrackSimple();
   } else if (fHodo!=0 && fSelUsingPrune !=0) {
@@ -553,11 +573,15 @@ Int_t THcHallCSpectrometer::TrackCalc()
 {
   if( fNtracks > 0 ) {
     Int_t hit_gold_track=0; // find track with index =0 which is best track
+    Int_t hit_dc_track=1; // 
     for (Int_t itrack = 0; itrack < fNtracks; itrack++ ){
       THaTrack* aTrack = static_cast<THaTrack*>( fTracks->At(itrack) );
-      if (aTrack->GetIndex()==0) hit_gold_track=itrack;  
+      if (aTrack->GetIndex()==0) {
+	hit_gold_track=itrack;
+        hit_dc_track = aTrack->GetTrkNum();
+      }  
     }
-    fDC->SetFocalPlaneBestTrack(hit_gold_track);
+    fDC->SetFocalPlaneBestTrack(hit_dc_track-1);
     fGoldenTrack = static_cast<THaTrack*>( fTracks->At(hit_gold_track) );
     fTrkIfo      = *fGoldenTrack;
     fTrk         = fGoldenTrack;
@@ -762,8 +786,8 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
   if ( fNtracks > 0 ) {
     chi2Min   = 10000000000.0;
     fGoodTrack = 0;
-    Bool_t* keep      = new Bool_t [fNtracks];
-    Int_t* reject    = new Int_t  [fNtracks];
+    vector<bool> keep(fNtracks);
+    vector<Int_t> reject(fNtracks);
 
     THaTrack *testTracks[fNtracks];
 
@@ -772,9 +796,10 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       keep[ptrack] = kTRUE;
       reject[ptrack] = 0;
       testTracks[ptrack] = static_cast<THaTrack*>( fTracks->At(ptrack) );
-      if (!testTracks[ptrack]) {delete[] keep; delete[] reject; return -1;}
+      if (!testTracks[ptrack]) return -1;
     }
-
+    fPruneSelect = 0;
+    Double_t PruneSelect=0;
     // ! Prune on xptar
     nGood = 0;
     for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
@@ -786,11 +811,12 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( TMath::Abs( testTracks[ptrack]->GetTTheta() ) >= fPruneXp ){
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 1;
+	  reject[ptrack] += 1;
 	}
       }
     }
-
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
     // ! Prune on yptar
     nGood = 0;
     for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
@@ -802,11 +828,13 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( TMath::Abs( testTracks[ptrack]->GetTPhi() ) >= fPruneYp ){
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 2;
+	  reject[ptrack] += 2;
 
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Prune on ytar
     nGood = 0;
@@ -819,10 +847,12 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( TMath::Abs( testTracks[ptrack]->GetTY() ) >= fPruneYtar ){
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 10;
+	  reject[ptrack] += 10;
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Prune on delta
     nGood = 0;
@@ -835,10 +865,38 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( TMath::Abs( testTracks[ptrack]->GetDp() ) >= fPruneDelta ){
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 20;
+	  reject[ptrack] += 20;
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
+
+   // !     Prune on dipole exit
+    nGood = 0;
+    for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
+      Double_t xfp=testTracks[ptrack]->GetX();
+      Double_t yfp=testTracks[ptrack]->GetY();
+      Double_t xpfp=testTracks[ptrack]->GetTheta();
+       Double_t ypfp=testTracks[ptrack]->GetPhi();
+       if ( fPruneDipoleExit==1 && InsideDipoleExitWindow(xfp,xpfp,yfp,ypfp) && ( keep[ptrack] ) ){
+	nGood ++;
+      }
+    }
+    if (nGood > 0 ) {
+      for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
+      Double_t xfp=testTracks[ptrack]->GetX();
+      Double_t yfp=testTracks[ptrack]->GetY();
+      Double_t xpfp=testTracks[ptrack]->GetTheta();
+       Double_t ypfp=testTracks[ptrack]->GetPhi();
+	if (!InsideDipoleExitWindow(xfp,xpfp,yfp,ypfp)  ){
+	  keep[ptrack] = kFALSE;
+	  reject[ptrack] += 30;
+	}
+      }
+    }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Prune on beta
     nGood = 0;
@@ -855,10 +913,12 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
 	Double_t betaP = p / TMath::Sqrt( p * p + fPartMass * fPartMass );
 	if ( TMath::Abs( testTracks[ptrack]->GetBeta() - betaP ) >= fPruneBeta ) {
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 100;
+	  reject[ptrack] += 100;
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Prune on deg. freedom for track chisq
     nGood = 0;
@@ -871,11 +931,13 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( testTracks[ptrack]->GetNDoF() < fPruneDf ){
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 200;
+	  reject[ptrack] += 200;
 	}
       }
     }
 
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
     //!     Prune on num pmt hits
     nGood = 0;
     for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
@@ -887,10 +949,12 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( testTracks[ptrack]->GetNPMT() < fPruneNPMT ){
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 100000;
+	  reject[ptrack] += 100000;
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Prune on beta chisqr
     nGood = 0;
@@ -905,10 +969,12 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
 	if ( ( testTracks[ptrack]->GetBetaChi2() >= fPruneChiBeta ) ||
 	     ( testTracks[ptrack]->GetBetaChi2() <= 0.01          ) ){
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 1000;
+	  reject[ptrack] += 1000;
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Prune on fptime
     nGood = 0;
@@ -922,10 +988,12 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( TMath::Abs( testTracks[ptrack]->GetFPTime() - fHodo->GetStartTimeCenter() ) >= fPruneFpTime ) {
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 2000;
+	  reject[ptrack] += 2000;
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Prune on Y2 being hit
     nGood = 0;
@@ -938,10 +1006,12 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( testTracks[ptrack]->GetGoodPlane4() != 1 ) {
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 10000;
+	  reject[ptrack] += 10000;
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Prune on X2 being hit
     nGood = 0;
@@ -954,10 +1024,12 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
       for (Int_t ptrack = 0; ptrack < fNtracks; ptrack++ ){
 	if ( testTracks[ptrack]->GetGoodPlane3() != 1 ) {
 	  keep[ptrack] = kFALSE;
-	  reject[ptrack] = reject[ptrack] + 20000;
+	  reject[ptrack] += 20000;
 	}
       }
     }
+    PruneSelect++;
+    if (nGood==1 && fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
 
     // !     Pick track with best chisq if more than one track passed prune tests
     Double_t chi2PerDeg = 0.;
@@ -970,7 +1042,9 @@ Int_t THcHallCSpectrometer::BestTrackUsingPrune()
 	chi2Min = chi2PerDeg;
       }
     }
-    // Set index=0 for fGoodTrack 
+     PruneSelect++;
+    if (fPruneSelect ==0 && fNtracks>1) fPruneSelect=PruneSelect;
+   // Set index=0 for fGoodTrack 
     for (Int_t iitrack = 0; iitrack < fNtracks; iitrack++ ){
       THaTrack* aTrack = dynamic_cast<THaTrack*>( fTracks->At(iitrack) );
       aTrack->SetIndex(1);
@@ -1035,6 +1109,45 @@ Bool_t THcHallCSpectrometer::IsMyEvent(Int_t evtype) const
   }
 
   return kFALSE;
+}
+//
+Bool_t THcHallCSpectrometer::InsideDipoleExitWindow(Double_t x_fp, Double_t xp_fp, Double_t y_fp, Double_t yp_fp) {
+  Bool_t inside=kTRUE;
+  Double_t DipoleExitWindowZpos=0.;
+  if (fUseSHMSDipoleExitWindow)  DipoleExitWindowZpos=-307.;
+  if (fUseHMSDipoleExitWindow)  DipoleExitWindowZpos=-147.48;
+  Double_t xdip = x_fp + xp_fp*DipoleExitWindowZpos;
+  Double_t ydip = y_fp + yp_fp*DipoleExitWindowZpos;
+  if (fUseSHMSDipoleExitWindow) inside = SHMSDipoleExitWindow(xdip,ydip);
+  if (fUseHMSDipoleExitWindow) inside = HMSDipoleExitWindow(xdip,ydip);
+  return inside;
+}
+//
+Bool_t THcHallCSpectrometer::SHMSDipoleExitWindow(Double_t xdip,Double_t ydip ) {
+    Bool_t insideSHMS=kTRUE;
+    Double_t crad=23.81; // radius of semicircle
+    Double_t voffset= crad-24.035;
+    Double_t hwid=11.549/2.;
+    if ( TMath::Abs(ydip) < hwid) {
+      if (TMath::Abs(xdip) > (crad+voffset)) insideSHMS=kFALSE;
+    } else {
+      if ( ydip >=hwid) {
+      if ( ((xdip-voffset)*(xdip-voffset)+(ydip-hwid)*(ydip-hwid)) > crad*crad) insideSHMS=kFALSE;
+      }
+      if ( ydip <=-hwid) {
+      if ( ((xdip-voffset)*(xdip-voffset)+(ydip+hwid)*(ydip+hwid)) > crad*crad) insideSHMS=kFALSE;
+      }
+    }
+      return insideSHMS;
+ }
+//
+Bool_t  THcHallCSpectrometer::HMSDipoleExitWindow(Double_t xdip,Double_t ydip) {
+  Bool_t insideHMS=kTRUE;
+    Double_t xpipe_offset = 2.8;
+    Double_t ypipe_offset = 0.0;
+    Double_t pipe_rad=46.507;
+    if ( ((xdip-xpipe_offset)*(xdip-xpipe_offset)+(ydip-ypipe_offset)*(ydip-ypipe_offset)) > pipe_rad*pipe_rad) insideHMS=kFALSE; 
+    return insideHMS ;
 }
 
 //_____________________________________________________________________________

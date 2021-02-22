@@ -14,6 +14,7 @@
 
 #include "THaSubDetector.h"
 #include "TClonesArray.h"
+#include "THcScintPlaneCluster.h"
 
 using namespace std;
 
@@ -57,21 +58,32 @@ class THcScintillatorPlane : public THaSubDetector {
   Double_t GetPosOffset() {return fPosOffset;};
   Double_t GetPosCenter(Int_t PaddleNo) {return fPosCenter[PaddleNo];}; // counting from zero!
   Double_t GetFpTime() {return fFptime;};
+  Double_t GetNumberClusters() {return fNumberClusters;}; // number of paddle clusters
 
   void SetFpTime(Double_t f) {fFptime=f;};
   void SetNGoodHits(Int_t ng) {fNGoodHits=ng;};
   void SetHitDistance(Double_t f) {fHitDistance=f;}; // Distance between track and hit paddle
+  void SetScinYPos(Double_t f) {fScinYPos=f;}; // Scint Average Y position at plane (cm)
+  void SetScinXPos(Double_t f) {fScinXPos=f;}; // Scint Average X position at plane (cm)
   void SetTrackXPosition(Double_t f) {fTrackXPosition=f;}; // Distance track X position at plane
   void SetTrackYPosition(Double_t f) {fTrackYPosition=f;}; // Distance track Y position at plane
+  void SetNumberClusters(Int_t nclus) {fNumberClusters=nclus;}; // number of paddle 
+  void SetCluster(Int_t ic,Double_t pos) {((THcScintPlaneCluster*) fCluster->ConstructedAt(ic))->Set(ic,pos);}
+  void SetClusterSize(Int_t ic,Double_t size) {((THcScintPlaneCluster*) fCluster->ConstructedAt(ic))->SetSize(size);}
+  void SetClusterFlag(Int_t ic,Double_t flag) {((THcScintPlaneCluster*) fCluster->ConstructedAt(ic))->SetFlag(flag);}
+  void SetClusterUsedFlag(Int_t ic,Double_t flag) {((THcScintPlaneCluster*) fCluster->ConstructedAt(ic))->SetUsedFlag(flag);}
 
   TClonesArray* fParentHitList;
 
   TClonesArray* GetHits() { return fHodoHits;};
 
+  TClonesArray* fCluster;
+
  protected:
 
   TClonesArray* frPosAdcErrorFlag;
   TClonesArray* frNegAdcErrorFlag;
+
 
   TClonesArray* frPosTDCHits;
   TClonesArray* frNegTDCHits;
@@ -111,6 +123,7 @@ class THcScintillatorPlane : public THaSubDetector {
   Int_t fTotNumPosAdcHits;
   Int_t fTotNumNegAdcHits;
   Int_t fTotNumAdcHits;
+  Int_t fNumberClusters;
 
   Int_t fTotNumPosTdcHits;
   Int_t fTotNumNegTdcHits;
@@ -168,7 +181,17 @@ class THcScintillatorPlane : public THaSubDetector {
   vector<Double_t>  fGoodDiffDistTrack;
 
   Int_t fDebugAdc;
+  Double_t fPosTdcRefTime;
+  Double_t fPosAdcRefTime;
+  Double_t fNegTdcRefTime;
+  Double_t fNegAdcRefTime;
+  Double_t fPosTdcRefDiffTime;
+  Double_t fPosAdcRefDiffTime;
+  Double_t fNegTdcRefDiffTime;
+  Double_t fNegAdcRefDiffTime;
   Double_t fHitDistance;
+  Double_t fScinXPos;
+  Double_t fScinYPos;
   Double_t fTrackXPosition;
   Double_t fTrackYPosition;
   Int_t fCosmicFlag; //
@@ -259,7 +282,10 @@ class THcScintillatorPlane : public THaSubDetector {
   Double_t *fNegPed;
   Double_t *fNegSig;
   Double_t *fNegThresh;
-
+  //
+   Int_t        fEventType;
+  Int_t        fEventNum;
+ 
   //
   Int_t fNScinGoodHits; // number of hits for which both ends of the paddle fired in time!
   Double_t fpTime; // the original code only has one fpTime per plane!

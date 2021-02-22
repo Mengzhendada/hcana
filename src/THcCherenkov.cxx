@@ -135,6 +135,11 @@ void THcCherenkov::DeleteArrays()
   delete [] fPedCount; fPedCount = NULL;
   delete [] fPed;      fPed      = NULL;
   delete [] fThresh;   fThresh   = NULL;
+
+  delete [] fPedDefault; fPedDefault = 0;
+  delete [] fAdcTimeWindowMin; fAdcTimeWindowMin = 0;
+  delete [] fAdcTimeWindowMax; fAdcTimeWindowMax = 0;
+  delete [] fRegionValue; fRegionValue = 0;
 }
 
 //_____________________________________________________________________________
@@ -166,7 +171,7 @@ THaAnalysisObject::EStatus THcCherenkov::Init( const TDatime& date )
     Warning(Here(here),"Hodoscope \"%s\" not found. ","hod");
   }
 
- fPresentP = 0;
+  fPresentP = 0;
   THaVar* vpresent = gHaVars->Find(Form("%s.present",GetApparatus()->GetName()));
   if(vpresent) {
     fPresentP = (Bool_t *) vpresent->GetValuePointer();
@@ -208,9 +213,12 @@ Int_t THcCherenkov::ReadDatabase( const TDatime& date )
   fPedMean  = new Double_t[fNelem];
   fAdcTimeWindowMin =  new Double_t[fNelem];
   fAdcTimeWindowMax=  new Double_t[fNelem];
+  fPedDefault=  new Int_t[fNelem];
   // Region parameters
   fRegionsValueMax = fNRegions * 8;
   fRegionValue     = new Double_t[fRegionsValueMax];
+  fAdcGoodElem = new Int_t[fNelem];
+  fAdcPulseAmpTest = new Double_t[fNelem];
 
   DBRequest list[]={
     {"_ped_limit",        fPedLimit,          kInt,     (UInt_t) fNelem, optional},
@@ -228,6 +236,7 @@ Int_t THcCherenkov::ReadDatabase( const TDatime& date )
     {"_debug_adc",        &fDebugAdc,         kInt, 0, 1},
     {"_adcTimeWindowMin", fAdcTimeWindowMin, kDouble,(UInt_t) fNelem,1},
     {"_adcTimeWindowMax", fAdcTimeWindowMax, kDouble, (UInt_t) fNelem,1},
+    {"_PedDefault", fPedDefault, kInt, (UInt_t) fNelem,1},
     {"_adc_tdc_offset",   &fAdcTdcOffset,     kDouble, 0, 1},
     {"_region",           &fRegionValue[0],   kDouble,  (UInt_t) fRegionsValueMax},
     {"_adcrefcut",        &fADC_RefTimeCut,   kInt,    0, 1},
@@ -236,6 +245,7 @@ Int_t THcCherenkov::ReadDatabase( const TDatime& date )
   for (Int_t i=0;i<fNelem;i++) {
     fAdcTimeWindowMin[i]=-1000.;
     fAdcTimeWindowMax[i]=1000.;
+    fPedDefault[i]=0;
   }
   fDebugAdc = 0; // Set ADC debug parameter to false unless set in parameter file
   fAdcTdcOffset = 0.0;
@@ -315,7 +325,8 @@ Int_t THcCherenkov::DefineVariables( EMode mode )
     {"goodAdcPulseAmp",     "Good ADC pulse amplitudes",    "fGoodAdcPulseAmp"},
     {"goodAdcPulseTime",    "Good ADC pulse times",         "fGoodAdcPulseTime"},
      {"goodAdcTdcDiffTime",    "Good Hodo Start - ADC pulse times",         "fGoodAdcTdcDiffTime"},
-   { 0 }
+       {"RefTime",      "Raw ADC RefTime (chan) ", "fRefTime"},        // Raw reference time
+  { 0 }
   };
 
   return DefineVarsFromList(vars, mode);
@@ -335,6 +346,7 @@ void THcCherenkov::Clear(Option_t* opt)
   fYAtCer = 0.0;
 
   fNpeSum = 0.0;
+  fRefTime=kBig;
 
   frAdcPedRaw->Clear();
   frAdcPulseIntRaw->Clear();
@@ -379,6 +391,9 @@ Int_t THcCherenkov::Decode( const THaEvData& evdata )
   }
   fNhits = DecodeToHitList(evdata, !present);
 
+  //THcHallCSpectrometer *app = dynamic_cast<THcHallCSpectrometer*>(GetApparatus());
+  // cout << "Cerenkov  Event num = " << evdata.GetEvNum() << " spec = " << app->GetName() << endl;
+
   if(gHaCuts->Result("Pedestal_event")) {
     AccumulatePedestals(fRawHitList);
     fAnalyzePedestals = 1;	// Analyze pedestals first normal events
@@ -394,11 +409,14 @@ Int_t THcCherenkov::Decode( const THaEvData& evdata )
   UInt_t nrAdcHits = 0;
 
   while(ihit < fNhits) {
-
+ 
     THcCherenkovHit* hit         = (THcCherenkovHit*) fRawHitList->At(ihit);
     Int_t            npmt        = hit->fCounter;
     THcRawAdcHit&    rawAdcHit   = hit->GetRawAdcHitPos();
-
+    if (rawAdcHit.GetNPulses() >0 && rawAdcHit.HasRefTime()) {
+      fRefTime=rawAdcHit.GetRefTime() ;
+    }
+    //if (rawAdcHit.GetNPulses()>0) cout << "Cer npmt = " << " ped = " << rawAdcHit.GetPed() << endl;
     for (UInt_t thit = 0; thit < rawAdcHit.GetNPulses(); thit++) {
 
       ((THcSignalHit*) frAdcPedRaw->ConstructedAt(nrAdcHits))->Set(npmt, rawAdcHit.GetPedRaw());
@@ -416,6 +434,23 @@ Int_t THcCherenkov::Decode( const THaEvData& evdata )
       if (rawAdcHit.GetPulseAmpRaw(thit) > 0)  ((THcSignalHit*) fAdcErrorFlag->ConstructedAt(nrAdcHits))->Set(npmt, 0);
       if (rawAdcHit.GetPulseAmpRaw(thit) <= 0) ((THcSignalHit*) fAdcErrorFlag->ConstructedAt(nrAdcHits))->Set(npmt, 1);
 
+      if (rawAdcHit.GetPulseAmpRaw(thit) <= 0) {
+	Double_t PeakPedRatio= rawAdcHit.GetF250_PeakPedestalRatio();
+	Int_t NPedSamples= rawAdcHit.GetF250_NPedestalSamples();
+	Double_t AdcToC =  rawAdcHit.GetAdcTopC();
+	Double_t AdcToV =  rawAdcHit.GetAdcTomV();
+	if (fPedDefault[npmt-1] !=0) {
+	  Double_t tPulseInt = AdcToC*(rawAdcHit.GetPulseIntRaw(thit) - fPedDefault[npmt-1]*PeakPedRatio);
+	  ((THcSignalHit*) frAdcPulseInt->ConstructedAt(nrAdcHits))->Set(npmt, tPulseInt);
+          ((THcSignalHit*) frAdcPedRaw->ConstructedAt(nrAdcHits))->Set(npmt, fPedDefault[npmt-1]);
+          ((THcSignalHit*) frAdcPed->ConstructedAt(nrAdcHits))->Set(npmt, float(fPedDefault[npmt-1])/float(NPedSamples)*AdcToV);
+	  
+	}
+	((THcSignalHit*) frAdcPulseAmp->ConstructedAt(nrAdcHits))->Set(npmt, 0.);
+	
+      }
+
+	
       ++nrAdcHits;
       fTotNumAdcHits++;
       fNumAdcHits.at(npmt-1) = npmt;
@@ -436,28 +471,40 @@ Int_t THcCherenkov::CoarseProcess( TClonesArray&  )
 {
   Double_t StartTime = 0.0;
   if( fglHod ) StartTime = fglHod->GetStartTime();
-
-  // Loop over the elements in the TClonesArray
+   Double_t OffsetTime = 0.0;
+   if( fglHod ) OffsetTime = fglHod->GetOffsetTime();
+ for(Int_t ipmt = 0; ipmt < fNelem; ipmt++) {
+    fAdcPulseAmpTest[ipmt] = -1000.;
+    fAdcGoodElem[ipmt]=-1;
+   }
+   //
   for(Int_t ielem = 0; ielem < frAdcPulseInt->GetEntries(); ielem++) {
-
     Int_t    npmt         = ((THcSignalHit*) frAdcPulseInt->ConstructedAt(ielem))->GetPaddleNumber() - 1;
+    Double_t pulseTime    = ((THcSignalHit*) frAdcPulseTime->ConstructedAt(ielem))->GetData();
+    Double_t pulseAmp     = ((THcSignalHit*) frAdcPulseAmp->ConstructedAt(ielem))->GetData();
+    Bool_t   errorFlag    = ((THcSignalHit*) fAdcErrorFlag->ConstructedAt(ielem))->GetData();
+    Double_t adctdcdiffTime = StartTime-pulseTime+OffsetTime;
+    Bool_t   pulseTimeCut = adctdcdiffTime > fAdcTimeWindowMin[npmt] && adctdcdiffTime < fAdcTimeWindowMax[npmt];
+ 	fGoodAdcMult.at(npmt) += 1;
+	if (!errorFlag) {
+	  if (pulseTimeCut && pulseAmp > fAdcPulseAmpTest[npmt]) {
+             fAdcGoodElem[npmt]=ielem;
+              fAdcPulseAmpTest[npmt] = pulseAmp;
+	  }
+        } else {
+	  if (pulseTimeCut) fAdcGoodElem[npmt]=ielem;
+        }
+  }
+  // Loop over the npmt
+  for(Int_t npmt = 0; npmt < fNelem; npmt++) {
+    Int_t ielem = fAdcGoodElem[npmt];
+    if (ielem != -1) {
     Double_t pulsePed     = ((THcSignalHit*) frAdcPed->ConstructedAt(ielem))->GetData();
     Double_t pulseInt     = ((THcSignalHit*) frAdcPulseInt->ConstructedAt(ielem))->GetData();
     Double_t pulseIntRaw  = ((THcSignalHit*) frAdcPulseIntRaw->ConstructedAt(ielem))->GetData();
     Double_t pulseAmp     = ((THcSignalHit*) frAdcPulseAmp->ConstructedAt(ielem))->GetData();
     Double_t pulseTime    = ((THcSignalHit*) frAdcPulseTime->ConstructedAt(ielem))->GetData();
-   Double_t adctdcdiffTime = StartTime-pulseTime;
-     Bool_t   errorFlag    = ((THcSignalHit*) fAdcErrorFlag->ConstructedAt(ielem))->GetData();
-    Bool_t   pulseTimeCut = adctdcdiffTime > fAdcTimeWindowMin[npmt] && adctdcdiffTime < fAdcTimeWindowMax[npmt];
-
-    
-    if (!errorFlag)
-      {
-	fGoodAdcMult.at(npmt) += 1;
-      }
-
-    // By default, the last hit within the timing cut will be considered "good"
-    if (!errorFlag && pulseTimeCut) {
+    Double_t adctdcdiffTime = StartTime-pulseTime+OffsetTime;
       fGoodAdcPed.at(npmt)         = pulsePed;
       fGoodAdcHitUsed.at(npmt)         = ielem+1;
       fGoodAdcPulseInt.at(npmt)    = pulseInt;
@@ -465,8 +512,8 @@ Int_t THcCherenkov::CoarseProcess( TClonesArray&  )
       fGoodAdcPulseAmp.at(npmt)    = pulseAmp;
       fGoodAdcPulseTime.at(npmt)   = pulseTime;
       fGoodAdcTdcDiffTime.at(npmt)   = adctdcdiffTime;
-
-      fNpe.at(npmt) = fGain[npmt]*fGoodAdcPulseInt.at(npmt);
+      
+      fNpe.at(npmt) = fGain[npmt]*pulseInt;
       fNpeSum += fNpe.at(npmt);
 
       fTotNumGoodAdcHits++;

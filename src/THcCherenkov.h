@@ -58,6 +58,7 @@ class THcCherenkov : public THaNonTrackingDetector, public THcHitList {
   Int_t     fTotNumGoodAdcHits;
   Int_t     fTotNumTracksMatched;
   Int_t     fTotNumTracksFired;
+  Double_t  fRefTime;
   Double_t  fNpeSum;
   Double_t* fGain;
 
@@ -91,6 +92,7 @@ class THcCherenkov : public THaNonTrackingDetector, public THcHitList {
   Double_t  fNpeThresh;
   Double_t*  fAdcTimeWindowMin;
   Double_t*  fAdcTimeWindowMax;
+  Int_t*  fPedDefault;
   Double_t  fAdcTdcOffset;
   Double_t* fRegionValue;
 
@@ -104,6 +106,8 @@ class THcCherenkov : public THaNonTrackingDetector, public THcHitList {
   Double_t* fPedMean; 	  /* Can be supplied in parameters and then */
   Double_t* fPed;
   Double_t* fThresh;
+  Double_t* fAdcPulseAmpTest;
+  Int_t*    fAdcGoodElem;
 
   // 12 Gev FADC variables
   TClonesArray* frAdcPedRaw;

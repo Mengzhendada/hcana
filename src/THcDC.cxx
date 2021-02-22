@@ -27,6 +27,7 @@ the number of parameters per plane.
 #include "TMath.h"
 #include "TVectorD.h"
 #include "THaApparatus.h"
+#include "THcHallCSpectrometer.h"
 
 #include <cstring>
 #include <cstdio>
@@ -302,9 +303,6 @@ Int_t THcDC::ReadDatabase( const TDatime& date )
   delete [] fSigma;  fSigma = new Double_t [fNPlanes];
 
   Bool_t optional = true;
-  fReadoutLR = new Int_t[fNPlanes];
-  fReadoutTB = new Int_t[fNPlanes];
-
 
   DBRequest list[]={
     {"dc_tdc_time_per_channel",&fNSperChan, kDouble},
@@ -416,6 +414,7 @@ Int_t THcDC::DefineVariables( EMode mode )
     { "chisq", "chisq/dof (golden track) ", "fChisq_best"},
     { "sp1_id", " (golden track) ", "fSp1_ID_best"},
     { "sp2_id", " (golden track) ", "fSp2_ID_best"},
+    { "InsideDipoleExit", " ","fInSideDipoleExit_best"},
     { "gtrack_nsp", " Number of space points in golden track ", "fNsp_best"},
     { "residual", "Residuals", "fResiduals"},
     { "residualExclPlane", "Residuals", "fResidualsExclPlane"},
@@ -484,6 +483,15 @@ void THcDC::DeleteArrays()
   delete [] fNChamHits; fNChamHits = NULL;
   delete [] fPlaneEvents; fPlaneEvents = NULL;
 
+  for( Int_t i = 0; i<fNPlanes; ++i )
+    delete [] fPlaneNames[i];
+  delete [] fPlaneNames;
+
+  delete [] fPlaneCoeffs; fPlaneCoeffs = 0;
+  delete [] fResiduals; fResiduals = 0;
+  delete [] fResidualsExclPlane; fResidualsExclPlane = 0;
+  delete [] fWire_hit_did; fWire_hit_did = 0;
+  delete [] fWire_hit_should; fWire_hit_should = 0;
 }
 
 //_____________________________________________________________________________
@@ -501,6 +509,7 @@ void THcDC::ClearEvent()
   fYp_fp_best=-10000.;
   fChisq_best=kBig;
   fNsp_best=0;
+  fInSideDipoleExit_best = kTRUE;
   for(UInt_t i=0;i<fNChambers;i++) {
     fChambers[i]->Clear();
   }
@@ -642,6 +651,8 @@ void THcDC::SetFocalPlaneBestTrack(Int_t golden_track_index)
       fY_fp_best=tr1->GetY();
       fXp_fp_best=tr1->GetXP();
       fYp_fp_best=tr1->GetYP();
+      THcHallCSpectrometer *app = dynamic_cast<THcHallCSpectrometer*>(GetApparatus());
+      fInSideDipoleExit_best = app->InsideDipoleExitWindow(fX_fp_best, fXp_fp_best ,fY_fp_best,fYp_fp_best);
       fSp1_ID_best=tr1->GetSp1_ID();
       fSp2_ID_best=tr1->GetSp2_ID();
       fChisq_best=tr1->GetChisq();
@@ -730,11 +741,11 @@ void THcDC::LinkStubs()
   std::vector<THcSpacePoint*> fSp;
   fNSp=0;
   fSp.clear();
-  fSp.reserve(10);
+  fSp.reserve(100);
   fNDCTracks=0;		// Number of Focal Plane tracks found
   fDCTracks->Delete();
   // Make a vector of pointers to the SpacePoints
-  if (fChambers[0]->GetNSpacePoints()+fChambers[1]->GetNSpacePoints()>10) return;
+  //if (fChambers[0]->GetNSpacePoints()+fChambers[1]->GetNSpacePoints()>10) return;
 
   for(UInt_t ich=0;ich<fNChambers;ich++) {
     Int_t nchamber=fChambers[ich]->GetChamberNum();
@@ -744,7 +755,8 @@ void THcDC::LinkStubs()
       fSp[fNSp]->fNChamber = nchamber;
       fSp[fNSp]->fNChamber_spnum = isp;
       fNSp++;
-      if (fNSp>10) break;
+      if (ich==0 && fNSp>50) break;
+      if (fNSp>100) break;
     }
   }
   Double_t stubminx = 999999;
@@ -811,7 +823,7 @@ void THcDC::LinkStubs()
 		fStubTest = 1;
 		//stubtest=1;  Used in h_track_tests.f
 		// Make a new track if there are not to many
-		if(fNDCTracks < MAXTRACKS) {
+		if(fNDCTracks < fNTracksMaxFP) {
 		  sptracks=0; // Number of tracks with this seed
 		  stub_tracks[sptracks++] = fNDCTracks;
 		  THcDCTrack *theDCTrack = new( (*fDCTracks)[fNDCTracks++]) THcDCTrack(fNPlanes);

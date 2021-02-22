@@ -26,7 +26,7 @@ class HCScalerLoc { // Utility class used by THcScalerEvtHandler
 	      UInt_t iki, Int_t iv) :
    name(nm), description(desc), index(idx), islot(s1), ichan(ich),
    ikind(iki), ivar(iv) { };
-  ~HCScalerLoc();
+  ~HCScalerLoc() {}
   TString name, description;
   UInt_t index, islot, ichan, ikind, ivar;
 };
@@ -59,6 +59,8 @@ private:
    Int_t fNumBCMs;
    Double_t *fBCM_Gain;
    Double_t *fBCM_Offset;
+   Double_t *fBCM_SatOffset;
+   Double_t *fBCM_SatQuadratic;
    Double_t *fBCM_delta_charge;
    Double_t fTotalTime;
    Double_t fDeltaTime;
